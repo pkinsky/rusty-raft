@@ -1,0 +1,7 @@
+[package]
+name = "raft"
+version = "0.1.0"
+authors = ["Paul Kinsky <pkinsky@gmail.com>"]
+
+[dependencies]
+actix = "0.7"

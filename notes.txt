@@ -1,0 +1,63 @@
+first, read raft paper and take notes. then build in-memory impl in which each node is a thread (does rust provide anything actor-like? probably something like queues, from which this can be built)
+https://raft.github.io/raft.pdf
+
+goal for phase 1: idiomatic rust code that permits adding/removing nodes from cluster, raft heartbeat (is this the term?), etc. basic raft impl from scratch based on just the paper.
+
+first, the problem definition (notes on replicated state machine problem section of raft paper)
+
+- Q: can I define arbitrary state machines and build generic code to handle same?
+
+- typically implemented using a replicated log. Consensus alg keeps replicated log consistient.
+-- server consensus module receives commands from clients, communicates them to consensus modules on other servers to ensure every log contains same commands in same order (eventually). once properly replicated, each server's state machine processes commands in log order and outputs are returned to clients. As a result, servers can be thought of as one highly available state machine, resilient despite individual servers dying.
+
+typical properties
+• They ensure safety (never returning an incorrect result) under all non-Byzantine conditions, including network delays, partitions, and packet loss, duplication, and reordering.
+• They are fully functional (available) as long as any majority of the servers are operational and can communicate with each other and with clients. Thus, a typical cluster of five servers can tolerate the failure of any two servers. Servers are assumed to fail by stopping; they may later recover from state on stable storage and rejoin the cluster.
+• They do not depend on timing to ensure the consistency of the logs: faulty clocks and extreme message delays can, at worst, cause availability problems.
+• In the common case, a command can complete as soon as a majority of the cluster has responded to a single round of remote procedure calls; a minority of slow servers need not impact overall system performance
+
+criticisms of paxos (prior state of the art) - hard to understand, only fully defined for single-decision case (not multi-decision as required for irl), etc
+
+raft:
+
+decomposes consensus into 3 problems:
+• Leader election: a new leader must be chosen when
+an existing leader fails (Section 5.2).
+• Log replication: the leader must accept log entries
+from clients and replicate them across the cluster,
+forcing the other logs to agree with its own (Section
+5.3).
+• Safety: the key safety property for Raft is the State
+Machine Safety Property in Figure 3: if any server
+has applied a particular log entry to its state machine,
+then no other server may apply a different command
+for the same log index. Section 5.4 describes how
+Raft ensures this property; the solution involves an
+additional restriction on the election mechanism described
+in Section 5.2
+
+state machine diagram for leader elections
+```
+ starts up
+ +                     times out,
+ |  Times out,         new election
+ |  starts election    +---+               receives vote
+ |  +----------------+ |   | +------------+from majority
+ |  |                | |   | |            |of servers
+ v  |                v |   v |            v
+++--+----+          ++-+---+-++          ++-----+
+|Follower|          |Candidate|          |Leader|
++--+---+-+          ++--------+          ++-----+
+   ^   ^             |                    |
+   |   |             |discovers current   |
+   |   +-------------+leader or new term  |
+   |                                      |discovers server
+   +--------------------------------------+with higher term
+```
+
+Time is divided into terms, and each term begins with an election. After a successful election, a single leader manages the cluster until the end of the term. Some elections fail, in which case the term ends without choosing a leader. The transitions between terms may be observed at different times on different servers.
+
+terms are used as a logical clock. each server stores a term number, which can only increase (monotonic). Term numbers are exchanged with every communication between servers, each server updates to the max of the two. requests with stale term numbers are rejected, and a candidate or leader with a stale term number immediately reverts to follower state.
+
+
+
