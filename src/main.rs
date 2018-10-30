@@ -1,6 +1,8 @@
 extern crate actix;
 use actix::prelude::*;
 
+use std::collections::HashMap;
+
 use std::time::{SystemTime};
 // note: SystemTime::now() is not montonic
 // other note: is time even used except for logging (ans: yeah, for clocks, timeouts, etc, right?)
@@ -16,7 +18,7 @@ use std::{thread, time};
 
 //TODO: deriving copy on the below newtypes b/c idk wat i doing - justify or remove and fix
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
-struct CandidateId(pub u64);
+struct NodeId(pub u64);
 
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 struct LogIdx(pub u64);
@@ -54,7 +56,7 @@ impl Ord for LogPosition {
 
 struct RequestVote {
     term: Term, // candidate's term
-    cid: CandidateId, // candidate requesting vote
+    cid: NodeId, // candidate requesting vote
     last_log_position: LogPosition // idx & term of candidate’s last log entry
 }
 
@@ -69,35 +71,13 @@ impl actix::Message for RequestVote {
 }
 
 
-
-// Persistent state on all servers:
-// (Updated on stable storage before responding to RPCs)
-//     log[] log entries; each entry contains command
-//     for state machine, and term when entry
-//     was received by leader (first index is 1)
-//     Volatile state on all servers:
-// commitIndex index of highest log entry known to be
-//     committed (initialized to 0, increases
-//                monotonically)
-//     lastApplied 
-//     Volatile state on leaders:
-// (Reinitialized after election)
-//     nextIndex[] for each server, index of the next log entry
-//     to send to that server (initialized to leader
-//                             last log index + 1)
-//     matchIndex[] for each server, index of highest log entry
-//     known to be replicated on server
-//     (initialized to 0, increases monotonically)
-
-
-
 impl Handler<RequestVote> for RaftNode {
     type Result = MessageResult<RequestVote>;
 
     // Receiver implementation:
     // 1. Reply false if term < currentTerm (§5.1)
     // 2. If votedFor is null or candidateId, and candidate’s log is at
-    //    least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+    //    least as up-to-date as receiver’s log, grant vote
 
     // Raft determines which of two logs is more up-to-date
     //     by comparing the index and term of the last entries in the
@@ -108,7 +88,7 @@ impl Handler<RequestVote> for RaftNode {
 
     fn handle(&mut self, req: RequestVote, state: &mut Context<Self>) -> Self::Result {
         // lmao worst name, true if candidates log is >= (at least as up to date) as this node's last entry
-        let candidateLogAtLeastAsUpToDate = self.log.last().map_or(
+        let candidateLogAtLeastAsUpToDate = self.persisted.log.last().map_or(
             LogPosition{idx: LogIdx(0), term: Term(0)},
             |last| {last.position}
         ) <= req.last_log_position;
@@ -116,22 +96,22 @@ impl Handler<RequestVote> for RaftNode {
 
         // determine if vote can be granted
         let vote_granted =
-                req.term >= self.current_term &&
-                self.voted_for.map_or(true, |cid| {cid == req.cid}) &&
+                req.term >= self.persisted.current_term &&
+                self.persisted.voted_for.map_or(true, |cid| {cid == req.cid}) &&
                 candidateLogAtLeastAsUpToDate;
 
         let resp =
             RequestVoteResp {
-                term: req.term.max(self.current_term),
+                term: req.term.max(self.persisted.current_term),
                 vote_granted: vote_granted,
             };
 
         //if req term > current term CONVERT TO FOLLOWER, this node is too behind to be a candidate/leader
-        if (req.term > self.current_term) {
+        if (req.term > self.persisted.current_term) {
             self.node_type = RaftNodeType::Follower;
         };
         // update own state based on max of terms seen
-        self.current_term = req.term.max(self.current_term);
+        self.persisted.current_term = req.term.max(self.persisted.current_term);
 
         MessageResult(resp)
     }
@@ -160,35 +140,80 @@ struct LogEntity {
 // todo: finish impl, quite a few bits here, also will req param over log entry type
 // todo: split out stable, volatile, leader-only state
 struct RaftNode {
-    // latest term server has seen (initialized to 0 on first boot, increases monotonically)
-    current_term: Term,
-    // candidateId that received vote in current term (or null if none)
-    voted_for: Option<CandidateId>,
-    // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
-    last_applied: LogIdx,
-    commit_index: LogIdx,
-    log: Vec<LogEntity>,
+    volatile:  VolatileState,
+    persisted: PersistedState,
     node_type: RaftNodeType,
-}
-
-// todo: can drop Raft prefix here
-enum RaftNodeType {
-    Follower,
-    Candidate, // todo: candidate-specific state (vote-tracking)
-    Leader, // todo: leader-specific state goeth here?
 }
 
 impl Default for RaftNode {
     fn default() -> RaftNode {
         RaftNode {
-            current_term: Term(0),
-            voted_for: None,
-            last_applied:  LogIdx(0), //volatile
-            commit_index: LogIdx(0), //volatile
-            log: Vec::new(),
+            volatile: VolatileState::default(),
+            persisted: PersistedState::default(),
             node_type: RaftNodeType::Follower,
         }
     }
+}
+
+
+
+// Reinitialized after election
+struct VolatileLeaderState {
+    // for each server, index of the next log entry to send to that server
+    // (initialized to leader last log index + 1)
+    next_index:  HashMap<NodeId, LogIdx>,
+    // for each server, index of highest log entry known to be replicated on
+    // server (initialized to 0, increases monotonically)
+    match_index: HashMap<NodeId, LogIdx>,
+}
+
+struct VolatileState {
+    // index of highest log entry known to be committed
+    // (initialized to 0, increases monotonically)
+    commit_index: LogIdx,
+    // index of highest log entry applied to state
+    // machine (initialized to 0, increases monotonically)
+    last_applied: LogIdx,
+}
+
+impl Default for VolatileState {
+    fn default() -> VolatileState {
+        VolatileState {
+            last_applied:  LogIdx(0), //volatile
+            commit_index: LogIdx(0), //volatile
+        }
+    }
+}
+
+
+// Updated on stable storage before responding to RPCs
+struct PersistedState {
+    // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+    current_term: Term,
+    // candidateId that received vote in current term (or null if none)
+    voted_for: Option<NodeId>,
+    // log entries; each entry contains command for state machine, and term when entry
+    // was received by leader (first index is 1)
+    log: Vec<LogEntity>,
+}
+
+impl Default for PersistedState {
+    fn default() -> PersistedState {
+        PersistedState {
+            current_term: Term(0),
+            voted_for: None,
+            log: Vec::new(),
+        }
+    }
+}
+
+
+
+// todo: can drop Raft prefix here
+enum RaftNodeType {
+    Follower,
+    Candidate, // todo: candidate-specific state (vote-tracking)
+    Leader(VolatileLeaderState),
 }
 
 
