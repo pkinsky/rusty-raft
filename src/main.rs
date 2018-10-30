@@ -5,6 +5,7 @@ use std::time::{SystemTime};
 // note: SystemTime::now() is not montonic
 // other note: is time even used except for logging (ans: yeah, for clocks, timeouts, etc, right?)
 
+use std::cmp::Ordering;
 
 use std::{thread, time};
 
@@ -23,12 +24,38 @@ struct LogIdx(pub u64);
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 struct Term(pub u64);
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct LogPosition {
+    idx: LogIdx,
+    term: Term,
+}
+
+
+// Raft determines which of two logs is more up-to-date
+//     by comparing the index and term of the last entries in the
+//     logs. If the logs have last entries with different terms, then
+//     the log with the later term is more up-to-date. If the logs
+//     end with the same term, then whichever log is longer is
+//     more up-to-date.
+impl PartialOrd for LogPosition {
+    fn partial_cmp(&self, other: &LogPosition) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LogPosition {
+    fn cmp(&self, other: &LogPosition) -> Ordering {
+        match self.term.cmp(&other.term) {
+            Ordering::Equal => self.idx.cmp(&other.idx),
+            x => x, // term takes precedence
+        }
+    }
+}
 
 struct RequestVote {
-    term          : Term, // candidate's term
-    cid           : CandidateId, // candidate requesting vote
-    last_log_idx  : LogIdx, // index of candidate’s last log entry
-    last_log_term : Term, // term of candidate’s last log entry
+    term: Term, // candidate's term
+    cid: CandidateId, // candidate requesting vote
+    last_log_position: LogPosition // idx & term of candidate’s last log entry
 }
 
 
@@ -72,15 +99,26 @@ impl Handler<RequestVote> for RaftNode {
     // 2. If votedFor is null or candidateId, and candidate’s log is at
     //    least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 
-    // TODO: logging goes here
+    // Raft determines which of two logs is more up-to-date
+    //     by comparing the index and term of the last entries in the
+    //     logs. If the logs have last entries with different terms, then
+    //     the log with the later term is more up-to-date. If the logs
+    //     end with the same term, then whichever log is longer is
+    //     more up-to-date.
+
     fn handle(&mut self, req: RequestVote, state: &mut Context<Self>) -> Self::Result {
+        // lmao worst name, true if candidates log is >= (at least as up to date) as this node's last entry
+        let candidateLogAtLeastAsUpToDate = self.log.last().map_or(
+            LogPosition{idx: LogIdx(0), term: Term(0)},
+            |last| {last.position}
+        ) <= req.last_log_position;
+
+
         // determine if vote can be granted
         let vote_granted =
                 req.term >= self.current_term &&
                 self.voted_for.map_or(true, |cid| {cid == req.cid}) &&
-                // todo: impl to compiling, but cheat sheet is too terse to determine meaning of up-to-date
-                //       wrt log (eg: term? idx? applied or committed?)
-                self.last_applied >= req.last_log_idx;
+                candidateLogAtLeastAsUpToDate;
 
         let resp =
             RequestVoteResp {
@@ -88,8 +126,11 @@ impl Handler<RequestVote> for RaftNode {
                 vote_granted: vote_granted,
             };
 
-        // update own state based on term seen (I think this is right - update, it is)
-        //TODO: if req term > current term ALSO NEED TO CONVERT TO FOLLOWER
+        //if req term > current term CONVERT TO FOLLOWER, this node is too behind to be a candidate/leader
+        if (req.term > self.current_term) {
+            self.node_type = RaftNodeType::Follower;
+        };
+        // update own state based on max of terms seen
         self.current_term = req.term.max(self.current_term);
 
         MessageResult(resp)
@@ -111,15 +152,30 @@ impl TimeCap {
 }
 
 
+struct LogEntity {
+    position: LogPosition, // term and idx
+    value:    String, // todo replace
+}
+
 // todo: finish impl, quite a few bits here, also will req param over log entry type
 // todo: split out stable, volatile, leader-only state
 struct RaftNode {
     // latest term server has seen (initialized to 0 on first boot, increases monotonically)
-    current_term : Term,
+    current_term: Term,
     // candidateId that received vote in current term (or null if none)
-    voted_for    : Option<CandidateId>,
+    voted_for: Option<CandidateId>,
     // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
-    last_applied : LogIdx,
+    last_applied: LogIdx,
+    commit_index: LogIdx,
+    log: Vec<LogEntity>,
+    node_type: RaftNodeType,
+}
+
+// todo: can drop Raft prefix here
+enum RaftNodeType {
+    Follower,
+    Candidate, // todo: candidate-specific state (vote-tracking)
+    Leader, // todo: leader-specific state goeth here?
 }
 
 impl Default for RaftNode {
@@ -127,7 +183,10 @@ impl Default for RaftNode {
         RaftNode {
             current_term: Term(0),
             voted_for: None,
-            last_applied:  LogIdx(0),
+            last_applied:  LogIdx(0), //volatile
+            commit_index: LogIdx(0), //volatile
+            log: Vec::new(),
+            node_type: RaftNodeType::Follower,
         }
     }
 }
