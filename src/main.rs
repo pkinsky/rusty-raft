@@ -12,8 +12,6 @@ use std::cmp::Ordering;
 use std::{thread, time};
 
 // idea: parameterize everything over some log entry type
-// note: going to need to have nodes capable of handling req, resp for each of 2 req'd rpc types
-//       is there a way to keep req/resp cycle in actrix?
 
 
 //TODO: deriving copy on the below newtypes b/c idk wat i doing - justify or remove and fix
@@ -54,6 +52,12 @@ impl Ord for LogPosition {
     }
 }
 
+//note: here's how to handle retries/delays:
+// ctx.run_later(self.dur, |act, ctx| {
+//     // do a thing
+// });
+
+
 struct RequestVote {
     term: Term, // candidate's term
     cid: NodeId, // candidate requesting vote
@@ -71,7 +75,7 @@ impl actix::Message for RequestVote {
 }
 
 
-impl Handler<RequestVote> for RaftNode {
+impl Handler<RequestVote> for Node {
     type Result = MessageResult<RequestVote>;
 
     // Receiver implementation:
@@ -108,7 +112,7 @@ impl Handler<RequestVote> for RaftNode {
 
         //if req term > current term CONVERT TO FOLLOWER, this node is too behind to be a candidate/leader
         if (req.term > self.persisted.current_term) {
-            self.node_type = RaftNodeType::Follower;
+            self.node_type = NodeType::Follower;
         };
         // update own state based on max of terms seen
         self.persisted.current_term = req.term.max(self.persisted.current_term);
@@ -139,18 +143,18 @@ struct LogEntity {
 
 // todo: finish impl, quite a few bits here, also will req param over log entry type
 // todo: split out stable, volatile, leader-only state
-struct RaftNode {
+struct Node {
     volatile:  VolatileState,
     persisted: PersistedState,
-    node_type: RaftNodeType,
+    node_type: NodeType,
 }
 
-impl Default for RaftNode {
-    fn default() -> RaftNode {
-        RaftNode {
+impl Default for Node {
+    fn default() -> Node {
+        Node {
             volatile: VolatileState::default(),
             persisted: PersistedState::default(),
-            node_type: RaftNodeType::Follower,
+            node_type: NodeType::Follower,
         }
     }
 }
@@ -194,6 +198,8 @@ struct PersistedState {
     voted_for: Option<NodeId>,
     // log entries; each entry contains command for state machine, and term when entry
     // was received by leader (first index is 1)
+    // NOTE: LogPosition fields of LogEntities must agree with vector index (with 1-start caveat)
+    //       formally, they should be monotonically increasing and have no gaps
     log: Vec<LogEntity>,
 }
 
@@ -210,7 +216,7 @@ impl Default for PersistedState {
 
 
 // todo: can drop Raft prefix here
-enum RaftNodeType {
+enum NodeType {
     Follower,
     Candidate, // todo: candidate-specific state (vote-tracking)
     Leader(VolatileLeaderState),
@@ -218,7 +224,7 @@ enum RaftNodeType {
 
 
 
-impl Actor for RaftNode {
+impl Actor for Node {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
@@ -244,7 +250,7 @@ impl Actor for RaftNode {
 fn main() {
     let system = System::new("test");
 
-    let addr = RaftNode::default().start();
+    let addr = Node::default().start();
 
     system.run();
 }
