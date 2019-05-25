@@ -1,20 +1,38 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use types::{LogEntity, LogIdx, NodeId, Term};
 
 // todo: finish impl, quite a few bits here, also will req param over log entry type
 pub struct Node {
-    pub volatile:  VolatileState,
-    pub persisted: PersistedState,
-    pub node_type: NodeType,
+    pub volatile:   VolatileState,
+    pub persisted:  PersistedState,
+    pub node_type:  NodeType,
+    pub node_id:    NodeId,
+    // required to call elections. should contain own node id? nah.. or yeah? but then need to filter out for elections
+    pub known_nodes: HashSet<NodeId>, // does this need to be a map of node id to node type? probably not..
 }
 
-impl Default for Node {
-    fn default() -> Node {
-        Node {
-            volatile: VolatileState::default(),
-            persisted: PersistedState::default(),
-            node_type: NodeType::Follower,
+pub fn mk_node(id: NodeId) -> Node {
+    Node {
+        volatile: VolatileState::default(),
+        persisted: PersistedState::default(),
+        node_type: NodeType::Follower,
+        node_id: id,
+        known_nodes: HashSet::new(),
+    }
+}
+
+
+// used to track votes received
+pub struct VolatileCandidateState {
+    pub votes_received: HashSet<NodeId>,
+}
+
+impl Default for VolatileCandidateState {
+    fn default() -> VolatileCandidateState {
+        VolatileCandidateState {
+            votes_received: HashSet::new(), // will be immediately updated with vote for self (own node id)
         }
     }
 }
@@ -73,6 +91,6 @@ impl Default for PersistedState {
 
 pub enum NodeType {
     Follower,
-    Candidate, // todo: candidate-specific state (vote-tracking)
+    Candidate(VolatileCandidateState),
     Leader(VolatileLeaderState),
 }

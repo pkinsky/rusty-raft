@@ -2,6 +2,14 @@ extern crate actix;
 
 use types::{NodeId, LogPosition, Term};
 
+// might not be the right name? plan is to schedule send of this to self every 
+pub struct TermTimeout {}
+
+impl actix::Message for TermTimeout {
+    type Result = ();
+}
+
+
 pub struct RequestVote {
     pub term: Term, // candidate's term
     pub cid: NodeId, // candidate requesting vote

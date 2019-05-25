@@ -2,9 +2,10 @@ pub mod state;
 pub mod messages;
 
 use std::cmp::Ordering;
+use std::hash::Hash;
 
 //TODO: deriving copy on the below newtypes b/c idk wat i doing - justify or remove and fix
-#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct NodeId(pub u64);
 
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
@@ -12,6 +13,14 @@ pub struct LogIdx(pub u64);
 
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Term(pub u64);
+
+// note: is this overly tied to immutable/functional style? Could just mutate in place instead of returning new
+impl Term {
+    pub fn increment(&self) -> Term {
+        let Term(u) = self;
+        Term(u + 1)
+    }
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct LogPosition {

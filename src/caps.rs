@@ -1,8 +1,6 @@
-
+// note: this exists only as the result of an experiment in capabilities style in rust & will probably not be used
 
 use std::time::{SystemTime};
-// note: SystemTime::now() is not montonic
-// other note: is time even used except for logging (ans: yeah, for clocks, timeouts, etc, right?)
 
 
 pub struct TimeCap {
@@ -13,5 +11,12 @@ pub struct TimeCap {
 impl TimeCap {
     pub fn get_now(&self) -> SystemTime {
         (self.get_now)()
+    }
+}
+
+// todo: have some function 'mkTimeCap' that takes, eg, optional offset and provides time cap
+pub fn system_time_cap() -> TimeCap {
+    TimeCap {
+        get_now: || { SystemTime::now()}
     }
 }

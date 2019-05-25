@@ -5,21 +5,47 @@ extern crate actix;
 use actix::{Actor, Context, Handler, MessageResult};
 
 
-use std::time::{SystemTime};
-// note: SystemTime::now() is not montonic
-// other note: is time even used except for logging (ans: yeah, for clocks, timeouts, etc, right?)
-
 use std::{thread, time};
 
-use caps::{TimeCap};
-use types::{Term, LogIdx, LogPosition};
-use types::state::{Node, NodeType};
-use types::messages::{RequestVote, RequestVoteResp};
+use caps::{TimeCap, system_time_cap};
+use types::{Term, LogIdx, LogPosition, NodeId};
+use types::state::{mk_node, Node, NodeType, VolatileCandidateState};
+use types::messages::{RequestVote, RequestVoteResp, TermTimeout};
 
-//note: here's how to handle retries/delays:
-// ctx.run_later(self.dur, |act, ctx| {
-//     // do a thing
-// });
+
+// todo: need to send this to self on state transition to follower (or as part of init)
+// NOTE: this is basically the conversion-to-candidate message? should be in a state transition fn instead tho!
+impl Handler<TermTimeout> for Node {
+    type Result = MessageResult<TermTimeout>;
+    fn handle(&mut self, req: TermTimeout, ctx: &mut Context<Self>) -> Self::Result {
+        // need to somehow check timestamp of last heartbeat..
+        // if we're not in timeout state just drop out
+
+        // if we're in timeout state then move to candidate
+        // (right? iirc there's some random component here to keep them all from going to candidate at the same time)
+        let mut candidate_state = VolatileCandidateState::default(); // could just have mkXYZ function to encapsulate insert mut
+        candidate_state.votes_received.insert(self.node_id);
+        self.node_type = NodeType::Candidate(candidate_state);
+
+        // On conversion to candidate, start election:
+        // • Increment currentTerm
+        //     • Vote for self
+        //     • Reset election timer (I think this just means scheduling another timeout to self msg)
+        //     • Send RequestVote RPCs to all other servers
+        self.persisted.current_term = self.persisted.current_term.increment();
+        self.persisted.voted_for = Some(self.node_id);
+
+
+        // send msg to all nodes in known node list (note: node id is just an int or something - not an actor addr)
+        // so how do I go from one to the other? or do I just use actor id for node id?
+
+
+
+
+        //is it required to even return a msg result?
+        MessageResult(())
+    }
+}
 
 impl Handler<RequestVote> for Node {
     type Result = MessageResult<RequestVote>;
@@ -36,7 +62,7 @@ impl Handler<RequestVote> for Node {
     //     end with the same term, then whichever log is longer is
     //     more up-to-date.
 
-    fn handle(&mut self, req: RequestVote, state: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, req: RequestVote, ctx: &mut Context<Self>) -> Self::Result {
         // lmao worst name, true if candidates log is >= (at least as up to date) as this node's last entry
         let candidate_log_at_least_as_up_to_date = self.persisted.log.last().map_or(
             LogPosition{idx: LogIdx(0), term: Term(0)},
@@ -67,17 +93,12 @@ impl Handler<RequestVote> for Node {
     }
 }
 
-
 impl Actor for Node {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        // todo: have some function 'mkTimeCap' that takes, eg, optional offset and provides time cap
-        let cap = TimeCap {
-            get_now: || { SystemTime::now()}
-        };
-
-        println!("now 1 {:?}", cap.get_now());
+        let cap = system_time_cap();
+        println!("started node with id {:?} at {:?}", self.node_id, cap.get_now());
 
         // note: never do this in actor, probably sleeps whole system/thread
         let ten_millis = time::Duration::from_millis(10);
@@ -94,7 +115,8 @@ impl Actor for Node {
 fn main() {
     let system = actix::System::new("test");
 
-    let addr = Node::default().start();
+    let id = NodeId(1);
+    let addr = mk_node(id).start();
 
     system.run();
 }
